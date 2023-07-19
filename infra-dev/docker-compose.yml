@@ -1,0 +1,8 @@
+version: "3"
+services:
+  spindle:
+    build: ./spindle
+    volumes:
+      - ../:/usr/src/spindle
+    tty: true
+    working_dir: /usr/src/spindle/spindle
