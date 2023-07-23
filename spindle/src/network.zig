@@ -1,4 +1,5 @@
 const std = @import("std");
+const math = @import("math.zig");
 const Allocator = std.mem.Allocator;
 
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
@@ -50,5 +51,27 @@ pub const Network = struct {
             self.allocator.free(layer.*);
         }
         self.allocator.free(self.biases);
+    }
+
+    fn feedforward(self: Self, x: []f32) !void {
+        var a = try self.allocator.alloc(f32, x.len);
+        std.mem.copy(f32, a, x); // TODO: Directly use x then free it properly instead of copying
+        for (self.weights, self.biases) |layer_weights, layer_biases| {
+            // TODO: Check if every sub-slice in the 2nd dimension of b have the same size
+            const weighted_sum = try self.allocator.alloc(f32, layer_weights[0].len);
+            defer self.allocator.free(weighted_sum);
+            for (weighted_sum, 0..) |*s, j| {
+                const weight = try self.allocator.alloc(f32, a.len);
+                defer self.allocator.free(weight);
+                for (weight, 0..) |*w, i| {
+                    w.* = layer_weights[i][j];
+                }
+                s.* = try math.dot(self.allocator, a, weight);
+            }
+            const z = try math.add(self.allocator, weighted_sum, layer_biases);
+            defer self.allocator.free(z);
+            self.allocator.free(a);
+            a = try math.sigmoid(self.allocator, z);
+        }
     }
 };

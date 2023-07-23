@@ -5,6 +5,6 @@ pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const network = try Network.init(allocator, &[_]u16{ 1, 5, 1 });
+    const network = try Network.init(allocator, &[_]u16{ 2, 3, 1 });
     _ = network;
 }
