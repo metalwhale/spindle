@@ -40,3 +40,14 @@ pub fn sigmoid(allocator: Allocator, vector: []f32) ![]f32 {
     }
     return result;
 }
+
+// Derivative of sigmoid: dσ = σ * (1-σ)
+pub fn sigmoidDerivative(allocator: Allocator, vector: []f32) ![]f32 {
+    const sigmoid_result = try sigmoid(allocator, vector);
+    defer allocator.free(sigmoid_result);
+    const result = try allocator.alloc(f32, vector.len);
+    for (result, sigmoid_result) |*r, s| {
+        r.* = s * (1 - s);
+    }
+    return result;
+}
