@@ -10,7 +10,7 @@ pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var prng = std.rand.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
+    var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
     // Dataset
     var raw_xs = [SAMPLES_LEN][INPUT_SIZE]f32{
         [_]f32{ 0, 0 },
@@ -38,9 +38,9 @@ pub fn main() !void {
         allocator.free(xs);
         allocator.free(ys);
     }
-    var train_dataset = Dataset.init(allocator, &prng, xs, ys);
+    const train_dataset = Dataset.init(allocator, &prng, xs, ys);
     // Network
     const network = try Network.init(allocator, &prng, &[_]u32{ INPUT_SIZE, 3, OUTPUT_SIZE });
     defer network.deinit();
-    try network.train(train_dataset, 2, 2, 0.0001);
+    try network.train(train_dataset, 2, 1000, 1);
 }
