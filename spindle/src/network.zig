@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = @import("math.zig");
+const Dataset = @import("dataset.zig").Dataset;
 
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
 pub const Network = struct {
@@ -8,24 +9,20 @@ pub const Network = struct {
     biases: [][]f32, // index of current layer minus 1 (layer 0 a.k.a input doesn't have weights), index of neuron in current layer
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u16) !Network {
+    pub fn init(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
         const layers_num = layer_sizes.len;
-        // Initialize weights
         const weights: [][][]f32 = try allocator.alloc([][]f32, layers_num - 1);
-        for (weights, 0..) |*layer, layer_index| {
-            layer.* = try allocator.alloc([]f32, layer_sizes[layer_index]);
-            for (layer.*) |*next_layer| {
+        const biases: [][]f32 = try allocator.alloc([]f32, layers_num - 1);
+        for (weights, biases, 0..) |*layer_weights, *layer_biases, layer_index| {
+            layer_weights.* = try allocator.alloc([]f32, layer_sizes[layer_index]);
+            layer_biases.* = try allocator.alloc(f32, layer_sizes[layer_index + 1]);
+            for (layer_weights.*) |*next_layer| {
                 next_layer.* = try allocator.alloc(f32, layer_sizes[layer_index + 1]);
                 for (next_layer.*) |*weight| {
                     weight.* = prng.random().floatNorm(f32);
                 }
             }
-        }
-        // Initialize biases
-        const biases: [][]f32 = try allocator.alloc([]f32, layers_num - 1);
-        for (biases, 0..) |*layer, layer_index| {
-            layer.* = try allocator.alloc(f32, layer_sizes[layer_index + 1]);
-            for (layer.*) |*bias| {
+            for (layer_biases.*) |*bias| {
                 bias.* = prng.random().floatNorm(f32);
             }
         }
@@ -38,17 +35,39 @@ pub const Network = struct {
     }
 
     pub fn deinit(self: Self) void {
-        for (self.weights) |*layer| {
-            for (layer.*) |*next_layer| {
+        for (self.weights, self.biases) |*layer_weights, *layer_biases| {
+            for (layer_weights.*) |*next_layer| {
                 self.allocator.free(next_layer.*);
             }
-            self.allocator.free(layer.*);
+            self.allocator.free(layer_weights.*);
+            self.allocator.free(layer_biases.*);
         }
         self.allocator.free(self.weights);
-        for (self.biases) |*layer| {
-            self.allocator.free(layer.*);
-        }
         self.allocator.free(self.biases);
+    }
+
+    pub fn train(self: Self, dataset: Dataset, batch_size: u32, epochs: u32, learning_rate: f32) !void {
+        _ = learning_rate;
+        for (0..epochs) |_| {
+            const batches = try dataset.getBatches(batch_size);
+            defer {
+                for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
+                    for (x_batches, y_batches) |x, y| {
+                        self.allocator.free(x);
+                        self.allocator.free(y);
+                    }
+                    self.allocator.free(x_batches);
+                    self.allocator.free(y_batches);
+                }
+                self.allocator.free(batches.x_batches);
+                self.allocator.free(batches.y_batches);
+            }
+            for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
+                for (x_batches, y_batches) |x, y| {
+                    _ = try self.backprop(x, y);
+                }
+            }
+        }
     }
 
     fn feedforward(self: Self, x: []f32) !struct { zs: [][]f32, as: [][]f32 } {
@@ -85,13 +104,11 @@ pub const Network = struct {
         const zs = layers.zs;
         const as = layers.as;
         defer {
-            for (zs) |*z| {
+            for (zs, as) |*z, *a| {
                 self.allocator.free(z.*);
-            }
-            self.allocator.free(zs);
-            for (as) |*a| {
                 self.allocator.free(a.*);
             }
+            self.allocator.free(zs);
             self.allocator.free(as);
         }
         // Backprop
