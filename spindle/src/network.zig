@@ -5,32 +5,30 @@ const Dataset = @import("dataset.zig").Dataset;
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
 pub const Network = struct {
     const Self = @This();
-    weights: [][][]f32, // index of current layer, index of neuron in current layer, index of neuron in the next layer
-    biases: [][]f32, // index of current layer minus 1 (layer 0 a.k.a input doesn't have weights), index of neuron in current layer
+    // 0: input layer, L: output layer, l: current layer, k: previous layer, m: next layer
+    // Since the layer 0 doesn't have weights, indices of weights and biases start counting from layer 1
+    weights: [][][]f32,
+    biases: [][]f32,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
         const layers_num = layer_sizes.len;
         const weights: [][][]f32 = try allocator.alloc([][]f32, layers_num - 1);
         const biases: [][]f32 = try allocator.alloc([]f32, layers_num - 1);
-        for (weights, biases, 0..) |*layer_weights, *layer_biases, layer_index| {
-            layer_weights.* = try allocator.alloc([]f32, layer_sizes[layer_index]);
-            layer_biases.* = try allocator.alloc(f32, layer_sizes[layer_index + 1]);
-            for (layer_weights.*) |*next_layer| {
-                next_layer.* = try allocator.alloc(f32, layer_sizes[layer_index + 1]);
-                for (next_layer.*) |*weight| {
-                    weight.* = prng.random().floatNorm(f32);
+        for (weights, biases, 0..) |*wk, *bl, l| {
+            wk.* = try allocator.alloc([]f32, layer_sizes[l]);
+            bl.* = try allocator.alloc(f32, layer_sizes[l + 1]);
+            for (wk.*) |*wl| {
+                wl.* = try allocator.alloc(f32, layer_sizes[l + 1]);
+                for (wl.*) |*w| {
+                    w.* = prng.random().floatNorm(f32);
                 }
             }
-            for (layer_biases.*) |*bias| {
-                bias.* = prng.random().floatNorm(f32);
+            for (bl.*) |*b| {
+                b.* = prng.random().floatNorm(f32);
             }
         }
-        const network = Network{
-            .weights = weights,
-            .biases = biases,
-            .allocator = allocator,
-        };
+        const network = Network{ .weights = weights, .biases = biases, .allocator = allocator };
         return network;
     }
 
@@ -54,68 +52,46 @@ pub const Network = struct {
                 self.allocator.free(batches.y_batches);
             }
             for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
-                const weight_gradients: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len);
-                const bias_gradients: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
-                for (
-                    weight_gradients,
-                    bias_gradients,
-                    self.weights,
-                    self.biases,
-                ) |*layer_weight_gradients, *layer_bias_gradients, layer_weights, layer_biases| {
-                    layer_weight_gradients.* = try self.allocator.alloc([]f32, layer_weights.len);
-                    layer_bias_gradients.* = try self.allocator.alloc(f32, layer_biases.len);
-                    for (layer_weight_gradients.*, layer_weights) |*next_layer_neuron_gradients, next_layer_neurons| {
-                        next_layer_neuron_gradients.* = try self.allocator.alloc(f32, next_layer_neurons.len);
-                        for (next_layer_neuron_gradients.*) |*gradient| {
-                            gradient.* = 0.0;
+                // Calculate batched gradients
+                const d_ws: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len);
+                const d_bs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
+                for (d_ws, d_bs, self.weights, self.biases) |*d_wk, *d_bl, wk, bl| {
+                    d_wk.* = try self.allocator.alloc([]f32, wk.len);
+                    d_bl.* = try self.allocator.alloc(f32, bl.len);
+                    for (d_wk.*, wk) |*d_wl, wl| {
+                        d_wl.* = try self.allocator.alloc(f32, wl.len);
+                        for (d_wl.*) |*d_w| {
+                            d_w.* = 0.0;
                         }
                     }
-                    for (layer_bias_gradients.*) |*gradient| {
-                        gradient.* = 0.0;
+                    for (d_bl.*) |*d_b| {
+                        d_b.* = 0.0;
                     }
                 }
-                defer self.free(weight_gradients, bias_gradients);
+                defer self.free(d_ws, d_bs);
                 for (x_batches, y_batches) |x, y| {
                     const gradients = try self.backprop(x, y);
-                    defer self.free(gradients.weight_gradients, gradients.bias_gradients);
-                    for (
-                        weight_gradients,
-                        bias_gradients,
-                        gradients.weight_gradients,
-                        gradients.bias_gradients,
-                    ) |*layer_total_weight_gradients, *layer_total_bias_gradients, layer_weight_gradients, layer_bias_gradients| {
-                        for (
-                            layer_total_weight_gradients.*,
-                            layer_weight_gradients,
-                        ) |*next_layer_total_neuron_gradients, next_layer_neuron_gradients| {
-                            for (
-                                next_layer_total_neuron_gradients.*,
-                                next_layer_neuron_gradients,
-                            ) |*total_weight_gradient, weight_gradient| {
-                                total_weight_gradient.* += weight_gradient;
+                    defer self.free(gradients.d_ws, gradients.d_bs);
+                    for (d_ws, d_bs, gradients.d_ws, gradients.d_bs) |*d_wk, *d_bl, per_d_wk, per_d_bl| {
+                        for (d_wk.*, per_d_wk) |*d_wl, per_d_wl| {
+                            for (d_wl.*, per_d_wl) |*d_w, per_d_w| {
+                                d_w.* += per_d_w / @as(f32, @floatFromInt(batch_size));
                             }
                         }
-                        for (
-                            layer_total_bias_gradients.*,
-                            layer_bias_gradients,
-                        ) |*total_bias_gradient, bias_gradient| {
-                            total_bias_gradient.* += bias_gradient;
+                        for (d_bl.*, per_d_bl) |*d_b, per_d_b| {
+                            d_b.* += per_d_b / @as(f32, @floatFromInt(batch_size));
                         }
                     }
                 }
-                for (
-                    self.weights,
-                    self.biases,
-                    weight_gradients,
-                    bias_gradients,
-                ) |*layer_weights, *layer_biass, layer_total_weight_gradients, layer_total_bias_gradients| {
-                    for (layer_weights.*, layer_total_weight_gradients) |*next_layer_neurons, next_layer_total_neuron_gradients| {
-                        for (next_layer_neurons.*, next_layer_total_neuron_gradients) |*weight, total_weight_gradient| {
-                            weight.* -= learning_rate * total_weight_gradient / @as(f32, @floatFromInt(batch_size));
+                // Update weights and biases
+                for (self.weights, self.biases, d_ws, d_bs) |*wk, *bl, d_wk, d_bl| {
+                    for (wk.*, d_wk) |*wl, d_wl| {
+                        for (wl.*, d_wl) |*w, d_w| {
+                            w.* -= learning_rate * d_w;
                         }
                     }
-                    for (layer_biass.*, layer_total_bias_gradients) |*bias, total_bias_gradient| {
-                        bias.* -= learning_rate * total_bias_gradient / @as(f32, @floatFromInt(batch_size));
+                    for (bl.*, d_bl) |*b, d_b| {
+                        b.* -= learning_rate * d_b;
                     }
                 }
             }
@@ -138,20 +114,20 @@ pub const Network = struct {
     fn feedforward(self: Self, x: []f32) !struct { zs: [][]f32, as: [][]f32 } {
         const zs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
         const as: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
-        for (self.weights, self.biases, zs, as, 0..) |layer_weights, layer_biases, *z, *a, layer_index| {
-            const ak: []f32 = if (layer_index == 0) x else as[layer_index - 1];
+        for (self.weights, self.biases, zs, as, 0..) |wl, bl, *z, *a, l| {
+            const ak: []f32 = if (l == 0) x else as[l - 1];
             // TODO: Check if every sub-slice in the 2nd dimension of b have the same size
-            const weighted_sum = try self.allocator.alloc(f32, layer_weights[0].len);
+            const weighted_sum = try self.allocator.alloc(f32, wl[0].len);
             defer self.allocator.free(weighted_sum);
             for (weighted_sum, 0..) |*s, j| {
                 const weight = try self.allocator.alloc(f32, ak.len);
                 defer self.allocator.free(weight);
                 for (weight, 0..) |*w, i| {
-                    w.* = layer_weights[i][j];
+                    w.* = wl[i][j];
                 }
                 s.* = try math.dot(self.allocator, ak, weight);
             }
-            z.* = try math.add(self.allocator, weighted_sum, layer_biases);
+            z.* = try math.add(self.allocator, weighted_sum, bl);
             a.* = try math.sigmoid(self.allocator, z.*);
         }
         return .{ .zs = zs, .as = as };
@@ -162,8 +138,7 @@ pub const Network = struct {
     //   δl = ((wm)T * δm) ⊙ σ'(zl)
     //   ∂C/∂bl = δl
     //   ∂C/∂wl = ak * δl
-    // L: last layer, l: current layer, k: previous layer, m: next layer
-    fn backprop(self: Self, x: []f32, y: []f32) !struct { weight_gradients: [][][]f32, bias_gradients: [][]f32 } {
+    fn backprop(self: Self, x: []f32, y: []f32) !struct { d_ws: [][][]f32, d_bs: [][]f32 } {
         // Feedforward
         const layers = try self.feedforward(x);
         const zs = layers.zs;
@@ -177,20 +152,20 @@ pub const Network = struct {
             self.allocator.free(as);
         }
         // Backprop
-        const weight_gradients: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len); // ∂C/∂w
-        const bias_gradients: [][]f32 = try self.allocator.alloc([]f32, self.biases.len); // ∂C/∂b
-        for (1..bias_gradients.len + 1) |reverse_index| {
-            const layer_index = bias_gradients.len - reverse_index; // Reverse iteration starts from the last layer
+        const d_ws: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len); // ∂C/∂w
+        const d_bs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len); // ∂C/∂b
+        for (1..d_bs.len + 1) |reverse_index| {
+            const l = d_bs.len - reverse_index; // Reverse iteration starts from the last layer
             var d_l: []f32 = undefined; // δl
-            if (layer_index == bias_gradients.len - 1) { // Last layer
-                const d_a = try self.costDerivative(as[layer_index], y); // ∇aC
+            if (l == d_bs.len - 1) { // Last layer
+                const d_a = try self.costDerivative(as[l], y); // ∇aC
                 defer self.allocator.free(d_a);
-                const d_z = try math.sigmoidDerivative(self.allocator, zs[layer_index]); // σ'(zL)
+                const d_z = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zL)
                 defer self.allocator.free(d_z);
                 d_l = try math.mul(self.allocator, d_a, d_z); // δL = ∇aC * σ'(zL)
             } else {
-                const wm = self.weights[layer_index + 1];
-                const d_lm = bias_gradients[layer_index + 1];
+                const wm = self.weights[l + 1];
+                const d_lm = d_bs[l + 1];
                 const weighted_sum = try self.allocator.alloc(f32, wm.len);
                 defer self.allocator.free(weighted_sum);
                 for (wm, weighted_sum) |w, *s| {
@@ -198,12 +173,12 @@ pub const Network = struct {
                     // in contrast to (l, k) on the website
                     s.* = try math.dot(self.allocator, w, d_lm); // (wm)T * δm
                 }
-                const d_z = try math.sigmoidDerivative(self.allocator, zs[layer_index]); // σ'(zl)
+                const d_z = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zl)
                 defer self.allocator.free(d_z);
                 d_l = try math.mul(self.allocator, weighted_sum, d_z); // δl = ((wm)T * δm) ⊙ σ'(zl)
             }
-            bias_gradients[layer_index] = d_l; // ∂C/∂bl = δl
-            const ak = if (layer_index == 0) x else as[layer_index - 1];
+            d_bs[l] = d_l; // ∂C/∂bl = δl
+            const ak = if (l == 0) x else as[l - 1];
             const d_w = try self.allocator.alloc([]f32, ak.len); // ∂C/∂wl
             for (ak, d_w) |aki, *d_wi| { // ∂C/∂wl = ak * δl
                 d_wi.* = try self.allocator.alloc(f32, d_l.len);
@@ -211,9 +186,9 @@ pub const Network = struct {
                     d_wij.* = aki * d_lj;
                 }
             }
-            weight_gradients[layer_index] = d_w;
+            d_ws[l] = d_w;
         }
-        return .{ .weight_gradients = weight_gradients, .bias_gradients = bias_gradients };
+        return .{ .d_ws = d_ws, .d_bs = d_bs };
     }
 
     fn cost(a: []f32, y: []f32) f32 {
@@ -242,12 +217,12 @@ pub const Network = struct {
     }
 
     fn free(self: Self, weights: [][][]f32, biases: [][]f32) void {
-        for (weights, biases) |*layer_weights, *layer_biases| {
-            for (layer_weights.*) |*next_layer| {
-                self.allocator.free(next_layer.*);
+        for (weights, biases) |*wk, *bl| {
+            for (wk.*) |*wl| {
+                self.allocator.free(wl.*);
             }
-            self.allocator.free(layer_weights.*);
-            self.allocator.free(layer_biases.*);
+            self.allocator.free(wk.*);
+            self.allocator.free(bl.*);
         }
         self.allocator.free(weights);
         self.allocator.free(biases);
