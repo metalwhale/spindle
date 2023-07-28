@@ -39,5 +39,5 @@ pub fn main() !void {
     // Network
     const network = try Network.init(allocator, &prng, &[_]u32{ INPUT_SIZE, 3, OUTPUT_SIZE });
     defer network.deinit();
-    try network.train(train_dataset, 2, 1000, 1);
+    try network.train(train_dataset, 2, 1000, 1, 200);
 }

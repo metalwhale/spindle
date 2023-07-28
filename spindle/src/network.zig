@@ -5,12 +5,13 @@ const Dataset = @import("dataset.zig").Dataset;
 const Allocator = std.mem.Allocator;
 
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
+// Index name convention:
+//   0: input layer, L: output layer, l: current layer, k: previous layer, m: next layer
 pub const Network = struct {
     const Self = @This();
-    // 0: input layer, L: output layer, l: current layer, k: previous layer, m: next layer
-    // Since the layer 0 doesn't have weights, indices of weights and biases start counting from layer 1
-    weights: [][][]f32,
-    biases: [][]f32,
+    // Since the layer 0 doesn't have weights, indices of weights and biases start pointing from layer 1
+    weights: [][][]f32, // Each element represents a 2-d matrix with shape (k, l)
+    biases: [][]f32, // Each element represents a 1-d matrix with shape (l)
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
@@ -39,14 +40,15 @@ pub const Network = struct {
         utils.free2dMatrix(self.allocator, self.biases);
     }
 
-    pub fn train(self: Self, dataset: Dataset, batch_size: u32, epochs: u32, learning_rate: f32) !void {
+    pub fn train(self: Self, dataset: Dataset, batch_size: u32, epochs: u32, learning_rate: f32, eval_steps: u32) !void {
+        var step: u32 = 0;
         for (0..epochs) |epoch| {
             const batches = try dataset.getBatches(batch_size);
             defer {
                 utils.free3dMatrix(self.allocator, batches.x_batches);
                 utils.free3dMatrix(self.allocator, batches.y_batches);
             }
-            for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
+            for (batches.x_batches, batches.y_batches) |x_batch, y_batch| {
                 // Calculate batched gradients
                 const d_ws: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len);
                 const d_bs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
@@ -67,7 +69,7 @@ pub const Network = struct {
                     utils.free3dMatrix(self.allocator, d_ws);
                     utils.free2dMatrix(self.allocator, d_bs);
                 }
-                for (x_batches, y_batches) |x, y| {
+                for (x_batch, y_batch) |x, y| {
                     const gradients = try self.backprop(x, y);
                     defer {
                         utils.free3dMatrix(self.allocator, gradients.d_ws);
@@ -95,9 +97,13 @@ pub const Network = struct {
                         b.* -= learning_rate * d_b;
                     }
                 }
+                // Evaluation
+                if (step % eval_steps == 0) {
+                    const loss = try self.evaluate(dataset);
+                    std.debug.print("Epoch {}: loss={d:.10}\n", .{ epoch, loss });
+                }
+                step += 1;
             }
-            const loss = try self.evaluate(dataset);
-            std.debug.print("Epoch {}: loss={d:.10}\n", .{ epoch, loss });
         }
     }
 
@@ -177,10 +183,10 @@ pub const Network = struct {
             d_bs[l] = dl; // ∂C/∂bl = δl
             const ak = if (l == 0) x else as[l - 1];
             const d_wk = try self.allocator.alloc([]f32, ak.len); // ∂C/∂wl
-            for (ak, d_wk) |aki, *d_wl| { // ∂C/∂wl = ak * δl
+            for (ak, d_wk) |aki, *d_wl| {
                 d_wl.* = try self.allocator.alloc(f32, dl.len);
                 for (dl, d_wl.*) |dlj, *d_w| {
-                    d_w.* = aki * dlj;
+                    d_w.* = aki * dlj; // ∂C/∂wl = ak * δl
                 }
             }
             d_ws[l] = d_wk;

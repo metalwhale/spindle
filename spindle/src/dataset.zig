@@ -26,8 +26,12 @@ pub const Dataset = struct {
             index.* = i;
         }
         self.prng.random().shuffle(usize, indices);
-        const x_batches = try self.allocator.alloc([][]f32, self.xs.len / batch_size + 1);
-        const y_batches = try self.allocator.alloc([][]f32, self.ys.len / batch_size + 1);
+        var batches_len = self.xs.len / batch_size;
+        if (self.xs.len % batch_size > 0) {
+            batches_len += 1;
+        }
+        const x_batches = try self.allocator.alloc([][]f32, batches_len);
+        const y_batches = try self.allocator.alloc([][]f32, batches_len);
         for (x_batches, y_batches, 0..) |*x_batch, *y_batch, batch_index| {
             const current_batch_size = @min(self.xs.len - batch_index * batch_size, batch_size);
             x_batch.* = try self.allocator.alloc([]f32, current_batch_size);
