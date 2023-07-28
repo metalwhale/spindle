@@ -5,18 +5,26 @@ pub const Dataset = struct {
     const Self = @This();
     xs: [][]f32,
     ys: [][]f32,
-    allocator: std.mem.Allocator,
-    prng: *std.rand.DefaultPrng,
+    allocator: Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, xs: [][]f32, ys: [][]f32) Dataset {
+    pub fn init(allocator: Allocator, xs: [][]f32, ys: [][]f32) Dataset {
+        // TODO: Check if every sample in xs and ys has the same size
         if (xs.len != ys.len) {
             unreachable;
         }
-        const dataset = Dataset{ .xs = xs, .ys = ys, .allocator = allocator, .prng = prng };
+        const dataset = Dataset{ .xs = xs, .ys = ys, .allocator = allocator };
         return dataset;
     }
 
-    pub fn getBatches(self: Self, batch_size: u32) !struct { x_batches: [][][]f32, y_batches: [][][]f32 } {
+    pub fn getSizes(self: Self) struct { samples_len: usize, input_size: usize, output_size: usize } {
+        return .{ .samples_len = self.xs.len, .input_size = self.xs[0].len, .output_size = self.ys[0].len };
+    }
+
+    pub fn getBatches(
+        self: Self,
+        prng: *std.rand.DefaultPrng,
+        batch_size: u32,
+    ) !struct { x_batches: [][][]f32, y_batches: [][][]f32 } {
         if (batch_size > self.xs.len) {
             unreachable;
         }
@@ -25,7 +33,7 @@ pub const Dataset = struct {
         for (indices, 0..) |*index, i| {
             index.* = i;
         }
-        self.prng.random().shuffle(usize, indices);
+        prng.random().shuffle(usize, indices);
         var batches_len = self.xs.len / batch_size;
         if (self.xs.len % batch_size > 0) {
             batches_len += 1;

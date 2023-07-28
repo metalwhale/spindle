@@ -1,43 +1,29 @@
 const std = @import("std");
-const utils = @import("utils.zig");
-const Dataset = @import("dataset.zig").Dataset;
+const Mnist = @import("mnist.zig").Mnist;
 const Network = @import("network.zig").Network;
-
-const INPUT_SIZE = 2;
-const OUTPUT_SIZE = 1;
-const SAMPLES_LEN = 4;
+const Config = @import("network.zig").Config;
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const allocator = std.heap.c_allocator;
     var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
     // Dataset
-    var raw_xs = [SAMPLES_LEN][INPUT_SIZE]f32{
-        [_]f32{ 0, 0 },
-        [_]f32{ 0, 1 },
-        [_]f32{ 1, 0 },
-        [_]f32{ 1, 1 },
-    };
-    var raw_ys = [SAMPLES_LEN][OUTPUT_SIZE]f32{
-        [_]f32{0},
-        [_]f32{1},
-        [_]f32{1},
-        [_]f32{0},
-    };
-    const xs: [][]f32 = try allocator.alloc([]f32, SAMPLES_LEN);
-    const ys: [][]f32 = try allocator.alloc([]f32, SAMPLES_LEN);
-    for (xs, ys, 0..) |*x, *y, i| {
-        x.* = &raw_xs[i];
-        y.* = &raw_ys[i];
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    if (args.len < 2) {
+        std.debug.print("Usage: {s} <dir_path>\n", .{args[0]});
+        std.os.exit(1);
     }
-    defer {
-        utils.free2dMatrix(allocator, xs);
-        utils.free2dMatrix(allocator, ys);
-    }
-    const train_dataset = Dataset.init(allocator, &prng, xs, ys);
+    const dir_path = args[1];
+    var mnist = try Mnist.init(allocator);
+    defer mnist.deinit();
+    const datasets = try mnist.readData(dir_path);
+    const train_dataset = datasets.train_dataset;
+    const val_dataset = datasets.val_dataset;
+    const sizes = train_dataset.getSizes();
     // Network
-    const network = try Network.init(allocator, &prng, &[_]u32{ INPUT_SIZE, 3, OUTPUT_SIZE });
+    const layer_sizes = &[_]usize{ sizes.input_size, 30, sizes.output_size };
+    const network = try Network.init(allocator, &prng, layer_sizes);
     defer network.deinit();
-    try network.train(train_dataset, 2, 1000, 1, 200);
+    const config = Config{ .batch_size = 10, .epochs = 15, .learning_rate = 3 };
+    try network.train(train_dataset, val_dataset, config);
 }

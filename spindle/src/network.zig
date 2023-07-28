@@ -4,6 +4,12 @@ const utils = @import("utils.zig");
 const Dataset = @import("dataset.zig").Dataset;
 const Allocator = std.mem.Allocator;
 
+pub const Config = struct {
+    batch_size: u32,
+    epochs: u32,
+    learning_rate: f32,
+};
+
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
 // Index name convention:
 //   0: input layer, L: output layer, l: current layer, k: previous layer, m: next layer
@@ -13,8 +19,9 @@ pub const Network = struct {
     weights: [][][]f32, // Each element represents a 2-d matrix with shape (k, l)
     biases: [][]f32, // Each element represents a 1-d matrix with shape (l)
     allocator: Allocator,
+    prng: *std.rand.DefaultPrng,
 
-    pub fn init(allocator: Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
+    pub fn init(allocator: Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const usize) !Network {
         const layers_num = layer_sizes.len;
         const weights: [][][]f32 = try allocator.alloc([][]f32, layers_num - 1);
         const biases: [][]f32 = try allocator.alloc([]f32, layers_num - 1);
@@ -31,7 +38,7 @@ pub const Network = struct {
                 b.* = prng.random().floatNorm(f32);
             }
         }
-        const network = Network{ .weights = weights, .biases = biases, .allocator = allocator };
+        const network = Network{ .weights = weights, .biases = biases, .allocator = allocator, .prng = prng };
         return network;
     }
 
@@ -40,10 +47,12 @@ pub const Network = struct {
         utils.free2dMatrix(self.allocator, self.biases);
     }
 
-    pub fn train(self: Self, dataset: Dataset, batch_size: u32, epochs: u32, learning_rate: f32, eval_steps: u32) !void {
-        var step: u32 = 0;
-        for (0..epochs) |epoch| {
-            const batches = try dataset.getBatches(batch_size);
+    pub fn train(self: Self, train_dataset: Dataset, val_dataset: Dataset, config: Config) !void {
+        var result = try self.evaluate(val_dataset);
+        std.debug.print("Before training: loss={d:.10}, acc={d:.2}%\n", .{ result.loss, result.accuracy * 100 });
+        const start_time = std.time.timestamp();
+        for (0..config.epochs) |epoch| {
+            const batches = try train_dataset.getBatches(self.prng, config.batch_size);
             defer {
                 utils.free3dMatrix(self.allocator, batches.x_batches);
                 utils.free3dMatrix(self.allocator, batches.y_batches);
@@ -78,11 +87,11 @@ pub const Network = struct {
                     for (d_ws, d_bs, gradients.d_ws, gradients.d_bs) |*d_wk, *d_bl, per_d_wk, per_d_bl| {
                         for (d_wk.*, per_d_wk) |*d_wl, per_d_wl| {
                             for (d_wl.*, per_d_wl) |*d_w, per_d_w| {
-                                d_w.* += per_d_w / @as(f32, @floatFromInt(batch_size));
+                                d_w.* += per_d_w / @as(f32, @floatFromInt(config.batch_size));
                             }
                         }
                         for (d_bl.*, per_d_bl) |*d_b, per_d_b| {
-                            d_b.* += per_d_b / @as(f32, @floatFromInt(batch_size));
+                            d_b.* += per_d_b / @as(f32, @floatFromInt(config.batch_size));
                         }
                     }
                 }
@@ -90,32 +99,43 @@ pub const Network = struct {
                 for (self.weights, self.biases, d_ws, d_bs) |*wk, *bl, d_wk, d_bl| {
                     for (wk.*, d_wk) |*wl, d_wl| {
                         for (wl.*, d_wl) |*w, d_w| {
-                            w.* -= learning_rate * d_w;
+                            w.* -= config.learning_rate * d_w;
                         }
                     }
                     for (bl.*, d_bl) |*b, d_b| {
-                        b.* -= learning_rate * d_b;
+                        b.* -= config.learning_rate * d_b;
                     }
                 }
-                // Evaluation
-                if (step % eval_steps == 0) {
-                    const loss = try self.evaluate(dataset);
-                    std.debug.print("Epoch {}: loss={d:.10}\n", .{ epoch, loss });
-                }
-                step += 1;
             }
+            // Evaluation
+            result = try self.evaluate(val_dataset);
+            std.debug.print("Epoch {}: elapsed_time={s}, loss={d:.10}, acc={d:.2}%\n", .{
+                epoch,
+                try utils.elapsedTime(self.allocator, start_time),
+                result.loss,
+                result.accuracy * 100,
+            });
         }
     }
 
-    pub fn evaluate(self: Self, dataset: Dataset) !f32 {
+    pub fn evaluate(self: Self, dataset: Dataset) !struct { loss: f32, accuracy: f32 } {
         var loss: f32 = 0.0;
+        var correct_count: f32 = 0.0;
         for (dataset.xs, dataset.ys) |x, y| {
             const layers = try self.feedforward(x);
+            defer {
+                utils.free2dMatrix(self.allocator, layers.zs);
+                utils.free2dMatrix(self.allocator, layers.as);
+            }
             const aL = layers.as[layers.as.len - 1];
             loss += cost(aL, y);
+            if (findMaxIndex(aL) == findMaxIndex(y)) {
+                correct_count += 1;
+            }
         }
         loss /= @floatFromInt(dataset.xs.len);
-        return loss;
+        const accuracy = correct_count / @as(f32, @floatFromInt(dataset.xs.len));
+        return .{ .loss = loss, .accuracy = accuracy };
     }
 
     fn feedforward(self: Self, x: []f32) !struct { zs: [][]f32, as: [][]f32 } {
@@ -123,7 +143,7 @@ pub const Network = struct {
         const as: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
         for (self.weights, self.biases, zs, as, 0..) |wl, bl, *zl, *al, l| {
             const ak: []f32 = if (l == 0) x else as[l - 1];
-            // TODO: Check if every sub-slice in the 2nd dimension of b have the same size
+            // TODO: Check if every sub-slice in the 2nd dimension of b has the same size
             const weighted_sum = try self.allocator.alloc(f32, wl[0].len);
             defer self.allocator.free(weighted_sum);
             for (weighted_sum, 0..) |*s, j| {
@@ -200,6 +220,18 @@ pub const Network = struct {
     }
 };
 
+fn findMaxIndex(a: []f32) usize {
+    var max_index: usize = 0;
+    var max_value = a[0];
+    for (a[1..], 1..) |ai, i| {
+        if (ai > max_value) {
+            max_index = i;
+            max_value = ai;
+        }
+    }
+    return max_index;
+}
+
 // Cost function: C = 1/2 * Σ(yi - ai)^2 (mean squared error)
 fn cost(a: []f32, y: []f32) f32 {
     if (a.len != y.len) {
@@ -213,7 +245,7 @@ fn cost(a: []f32, y: []f32) f32 {
     return c;
 }
 
-// Derivative of cost function dC/dai = ai - yi
+// Derivative of cost function: dC/dai = ai - yi
 fn costDerivative(allocator: Allocator, a: []f32, y: []f32) ![]f32 {
     if (a.len != y.len) {
         unreachable;
