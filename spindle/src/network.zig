@@ -1,6 +1,7 @@
 const std = @import("std");
 const math = @import("math.zig");
 const Dataset = @import("dataset.zig").Dataset;
+const Allocator = std.mem.Allocator;
 
 // See: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/network.py
 pub const Network = struct {
@@ -9,9 +10,9 @@ pub const Network = struct {
     // Since the layer 0 doesn't have weights, indices of weights and biases start counting from layer 1
     weights: [][][]f32,
     biases: [][]f32,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
+    pub fn init(allocator: Allocator, prng: *std.rand.DefaultPrng, layer_sizes: []const u32) !Network {
         const layers_num = layer_sizes.len;
         const weights: [][][]f32 = try allocator.alloc([][]f32, layers_num - 1);
         const biases: [][]f32 = try allocator.alloc([]f32, layers_num - 1);
@@ -104,8 +105,8 @@ pub const Network = struct {
         var loss: f32 = 0.0;
         for (dataset.xs, dataset.ys) |x, y| {
             const layers = try self.feedforward(x);
-            const a = layers.as[layers.as.len - 1];
-            loss += cost(a, y);
+            const aL = layers.as[layers.as.len - 1];
+            loss += cost(aL, y);
         }
         loss /= @floatFromInt(dataset.xs.len);
         return loss;
@@ -114,7 +115,7 @@ pub const Network = struct {
     fn feedforward(self: Self, x: []f32) !struct { zs: [][]f32, as: [][]f32 } {
         const zs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
         const as: [][]f32 = try self.allocator.alloc([]f32, self.biases.len);
-        for (self.weights, self.biases, zs, as, 0..) |wl, bl, *z, *a, l| {
+        for (self.weights, self.biases, zs, as, 0..) |wl, bl, *zl, *al, l| {
             const ak: []f32 = if (l == 0) x else as[l - 1];
             // TODO: Check if every sub-slice in the 2nd dimension of b have the same size
             const weighted_sum = try self.allocator.alloc(f32, wl[0].len);
@@ -127,8 +128,8 @@ pub const Network = struct {
                 }
                 s.* = try math.dot(self.allocator, ak, weight);
             }
-            z.* = try math.add(self.allocator, weighted_sum, bl);
-            a.* = try math.sigmoid(self.allocator, z.*);
+            zl.* = try math.add(self.allocator, weighted_sum, bl);
+            al.* = try math.sigmoid(self.allocator, zl.*);
         }
         return .{ .zs = zs, .as = as };
     }
@@ -144,9 +145,9 @@ pub const Network = struct {
         const zs = layers.zs;
         const as = layers.as;
         defer {
-            for (zs, as) |*z, *a| {
-                self.allocator.free(z.*);
-                self.allocator.free(a.*);
+            for (zs, as) |*zl, *al| {
+                self.allocator.free(zl.*);
+                self.allocator.free(al.*);
             }
             self.allocator.free(zs);
             self.allocator.free(as);
@@ -154,66 +155,46 @@ pub const Network = struct {
         // Backprop
         const d_ws: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len); // ∂C/∂w
         const d_bs: [][]f32 = try self.allocator.alloc([]f32, self.biases.len); // ∂C/∂b
-        for (1..d_bs.len + 1) |reverse_index| {
-            const l = d_bs.len - reverse_index; // Reverse iteration starts from the last layer
-            var d_l: []f32 = undefined; // δl
+        var l = d_bs.len - 1;
+        while (l >= 0) {
+            var dl: []f32 = undefined; // δl
             if (l == d_bs.len - 1) { // Last layer
-                const d_a = try self.costDerivative(as[l], y); // ∇aC
-                defer self.allocator.free(d_a);
-                const d_z = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zL)
-                defer self.allocator.free(d_z);
-                d_l = try math.mul(self.allocator, d_a, d_z); // δL = ∇aC * σ'(zL)
+                const d_al = try costDerivative(self.allocator, as[l], y); // ∇aC
+                defer self.allocator.free(d_al);
+                const d_zl = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zL)
+                defer self.allocator.free(d_zl);
+                dl = try math.mul(self.allocator, d_al, d_zl); // δL = ∇aC * σ'(zL)
             } else {
-                const wm = self.weights[l + 1];
-                const d_lm = d_bs[l + 1];
-                const weighted_sum = try self.allocator.alloc(f32, wm.len);
+                const wl = self.weights[l + 1];
+                const dm = d_bs[l + 1];
+                const weighted_sum = try self.allocator.alloc(f32, wl.len);
                 defer self.allocator.free(weighted_sum);
-                for (wm, weighted_sum) |w, *s| {
+                for (wl, weighted_sum) |wm, *s| {
                     // NOTE: We don't need to use transpose here since we choose (k, l) as the order of dimensions in the weights
                     // in contrast to (l, k) on the website
-                    s.* = try math.dot(self.allocator, w, d_lm); // (wm)T * δm
+                    s.* = try math.dot(self.allocator, wm, dm); // (wm)T * δm
                 }
-                const d_z = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zl)
-                defer self.allocator.free(d_z);
-                d_l = try math.mul(self.allocator, weighted_sum, d_z); // δl = ((wm)T * δm) ⊙ σ'(zl)
+                const d_zl = try math.sigmoidDerivative(self.allocator, zs[l]); // σ'(zl)
+                defer self.allocator.free(d_zl);
+                dl = try math.mul(self.allocator, weighted_sum, d_zl); // δl = ((wm)T * δm) ⊙ σ'(zl)
             }
-            d_bs[l] = d_l; // ∂C/∂bl = δl
+            d_bs[l] = dl; // ∂C/∂bl = δl
             const ak = if (l == 0) x else as[l - 1];
-            const d_w = try self.allocator.alloc([]f32, ak.len); // ∂C/∂wl
-            for (ak, d_w) |aki, *d_wi| { // ∂C/∂wl = ak * δl
-                d_wi.* = try self.allocator.alloc(f32, d_l.len);
-                for (d_l, d_wi.*) |d_lj, *d_wij| {
-                    d_wij.* = aki * d_lj;
+            const d_wk = try self.allocator.alloc([]f32, ak.len); // ∂C/∂wl
+            for (ak, d_wk) |aki, *d_wl| { // ∂C/∂wl = ak * δl
+                d_wl.* = try self.allocator.alloc(f32, dl.len);
+                for (dl, d_wl.*) |dlj, *d_w| {
+                    d_w.* = aki * dlj;
                 }
             }
-            d_ws[l] = d_w;
+            d_ws[l] = d_wk;
+            if (l > 0) {
+                l -= 1;
+            } else {
+                break;
+            }
         }
         return .{ .d_ws = d_ws, .d_bs = d_bs };
-    }
-
-    fn cost(a: []f32, y: []f32) f32 {
-        if (a.len != y.len) {
-            unreachable;
-        }
-        var c: f32 = 0.0;
-        for (a, y) |ai, yi| {
-            c += std.math.pow(f32, ai - yi, 2);
-        }
-        c /= 2.0;
-        return c;
-    }
-
-    // Cost function: C = 1/2 * Σ(yi - ai)^2 (mean squared error)
-    // => Derivative of cost function dC/dai = ai - yi
-    fn costDerivative(self: Self, a: []f32, y: []f32) ![]f32 {
-        if (a.len != y.len) {
-            unreachable;
-        }
-        const dc = try self.allocator.alloc(f32, a.len);
-        for (dc, a, y) |*dci, ai, yi| {
-            dci.* = ai - yi;
-        }
-        return dc;
     }
 
     fn free(self: Self, weights: [][][]f32, biases: [][]f32) void {
@@ -228,3 +209,28 @@ pub const Network = struct {
         self.allocator.free(biases);
     }
 };
+
+// Cost function: C = 1/2 * Σ(yi - ai)^2 (mean squared error)
+fn cost(a: []f32, y: []f32) f32 {
+    if (a.len != y.len) {
+        unreachable;
+    }
+    var c: f32 = 0.0;
+    for (a, y) |ai, yi| {
+        c += std.math.pow(f32, ai - yi, 2);
+    }
+    c /= 2.0;
+    return c;
+}
+
+// Derivative of cost function dC/dai = ai - yi
+fn costDerivative(allocator: Allocator, a: []f32, y: []f32) ![]f32 {
+    if (a.len != y.len) {
+        unreachable;
+    }
+    const dc = try allocator.alloc(f32, a.len);
+    for (dc, a, y) |*dci, ai, yi| {
+        dci.* = ai - yi;
+    }
+    return dc;
+}
