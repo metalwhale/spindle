@@ -1,5 +1,6 @@
 const std = @import("std");
 const math = @import("math.zig");
+const utils = @import("utils.zig");
 const Dataset = @import("dataset.zig").Dataset;
 const Allocator = std.mem.Allocator;
 
@@ -34,23 +35,16 @@ pub const Network = struct {
     }
 
     pub fn deinit(self: Self) void {
-        self.free(self.weights, self.biases);
+        utils.free3dMatrix(self.allocator, self.weights);
+        utils.free2dMatrix(self.allocator, self.biases);
     }
 
     pub fn train(self: Self, dataset: Dataset, batch_size: u32, epochs: u32, learning_rate: f32) !void {
         for (0..epochs) |epoch| {
             const batches = try dataset.getBatches(batch_size);
             defer {
-                for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
-                    for (x_batches, y_batches) |x, y| {
-                        self.allocator.free(x);
-                        self.allocator.free(y);
-                    }
-                    self.allocator.free(x_batches);
-                    self.allocator.free(y_batches);
-                }
-                self.allocator.free(batches.x_batches);
-                self.allocator.free(batches.y_batches);
+                utils.free3dMatrix(self.allocator, batches.x_batches);
+                utils.free3dMatrix(self.allocator, batches.y_batches);
             }
             for (batches.x_batches, batches.y_batches) |x_batches, y_batches| {
                 // Calculate batched gradients
@@ -69,10 +63,16 @@ pub const Network = struct {
                         d_b.* = 0.0;
                     }
                 }
-                defer self.free(d_ws, d_bs);
+                defer {
+                    utils.free3dMatrix(self.allocator, d_ws);
+                    utils.free2dMatrix(self.allocator, d_bs);
+                }
                 for (x_batches, y_batches) |x, y| {
                     const gradients = try self.backprop(x, y);
-                    defer self.free(gradients.d_ws, gradients.d_bs);
+                    defer {
+                        utils.free3dMatrix(self.allocator, gradients.d_ws);
+                        utils.free2dMatrix(self.allocator, gradients.d_bs);
+                    }
                     for (d_ws, d_bs, gradients.d_ws, gradients.d_bs) |*d_wk, *d_bl, per_d_wk, per_d_bl| {
                         for (d_wk.*, per_d_wk) |*d_wl, per_d_wl| {
                             for (d_wl.*, per_d_wl) |*d_w, per_d_w| {
@@ -145,12 +145,8 @@ pub const Network = struct {
         const zs = layers.zs;
         const as = layers.as;
         defer {
-            for (zs, as) |*zl, *al| {
-                self.allocator.free(zl.*);
-                self.allocator.free(al.*);
-            }
-            self.allocator.free(zs);
-            self.allocator.free(as);
+            utils.free2dMatrix(self.allocator, zs);
+            utils.free2dMatrix(self.allocator, as);
         }
         // Backprop
         const d_ws: [][][]f32 = try self.allocator.alloc([][]f32, self.weights.len); // ∂C/∂w
@@ -195,18 +191,6 @@ pub const Network = struct {
             }
         }
         return .{ .d_ws = d_ws, .d_bs = d_bs };
-    }
-
-    fn free(self: Self, weights: [][][]f32, biases: [][]f32) void {
-        for (weights, biases) |*wk, *bl| {
-            for (wk.*) |*wl| {
-                self.allocator.free(wl.*);
-            }
-            self.allocator.free(wk.*);
-            self.allocator.free(bl.*);
-        }
-        self.allocator.free(weights);
-        self.allocator.free(biases);
     }
 };
 

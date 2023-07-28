@@ -21,6 +21,7 @@ pub const Dataset = struct {
             unreachable;
         }
         const indices = try self.allocator.alloc(usize, self.xs.len);
+        defer self.allocator.free(indices);
         for (indices, 0..) |*index, i| {
             index.* = i;
         }

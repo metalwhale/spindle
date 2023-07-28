@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 const Dataset = @import("dataset.zig").Dataset;
 const Network = @import("network.zig").Network;
 
@@ -31,12 +32,8 @@ pub fn main() !void {
         y.* = &raw_ys[i];
     }
     defer {
-        for (xs, ys) |*x, *y| {
-            allocator.free(x.*);
-            allocator.free(y.*);
-        }
-        allocator.free(xs);
-        allocator.free(ys);
+        utils.free2dMatrix(allocator, xs);
+        utils.free2dMatrix(allocator, ys);
     }
     const train_dataset = Dataset.init(allocator, &prng, xs, ys);
     // Network
