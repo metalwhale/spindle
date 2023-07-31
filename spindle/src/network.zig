@@ -109,9 +109,11 @@ pub const Network = struct {
             }
             // Evaluation
             result = try self.evaluate(val_dataset);
+            const elapsed_time = try utils.elapsedTime(self.allocator, start_time);
+            defer self.allocator.free(elapsed_time);
             std.debug.print("Epoch {}: elapsed_time={s}, loss={d:.10}, acc={d:.2}%\n", .{
                 epoch,
-                try utils.elapsedTime(self.allocator, start_time),
+                elapsed_time,
                 result.loss,
                 result.accuracy * 100,
             });
